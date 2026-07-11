@@ -32,6 +32,10 @@ build/
 ### VS Code ###
 .vscode/
 
+### GIT ###
+.gitignore
+.DS_Store
+
 ### AI ###
 .claude/
 .gemini/
