@@ -1,0 +1,67 @@
+schema: spec-driven
+
+# 專案架構約定 (用於 AI 輔助開發、K8s 雲端原生與 Jenkins CI/CD 治理)
+context: |
+  Architecture Pattern: Java Gateway + Distributed Microservices (Java & Node.js)
+  Frontend: Angular 18+ (TypeScript in Nx Workspace)
+  Entry Point: Java Spring Cloud Gateway (MVC)
+  Authentication: Gateway-Centralized. Gateway validates JWT and propagates identity via HTTP Headers (X-User-Id, X-User-Roles).
+  
+  Frontend Standards:
+    - Language: TypeScript (Strict mode).
+    - Styling: Tailwind CSS + Angular Material/Spartan UI.
+    - Build System: Angular CLI with Vite/esbuild (Nx Workspace mandatory for monorepo scaling).
+    - Folder Structure: Feature-based modular monolith. Each feature (auth, course, chat) must be self-contained in `src/app/features/<feature-name>/`.
+    - Communication: No direct imports between features. Inter-feature communication must use Event Bus (RxJS Subjects/CustomEvents) to allow future micro-frontend migration.
+    - Design System: Shared Design Tokens via Tailwind config (no hardcoded colors/spacing).
+    - API Integration: Angular HttpClient with automated code generation from OpenAPI specs.
+    - State Management: RxJS (Streams), Signals/NgRx (State).
+
+  Backend Standards:
+    - Java: Spring Boot 3.5.x, Spring Cloud 2025.x
+    - Node.js: TypeScript, Express/NestJS (for online/chat service)
+    - Communication (Standard): REST (FeignClient + OpenAPI).
+    - Communication (Reserved): gRPC (Protobuf), Kafka (for event streaming).
+    - Persistence: Database-per-service (PostgreSQL).
+
+  Containerization & K8s Readiness Standards (Mandatory):
+    - Base Image: Multi-stage builds mandatory. Production images must use Distroless or minimal Alpine/Debian-slim.
+    - Config Management: 12-Factor App compliant. No configurations in image; all configs read from env variables (ConfigMap/Secret).
+    - Health Checks: Every service must expose HTTP endpoints for liveness and readiness probes (/actuator/health/* or /health/*).
+    - Graceful Shutdown: Services must handle SIGTERM and complete in-flight transactions within a 30-second timeout.
+    - Statelessness: No local file persistence. Static files must go to S3/Object Storage.
+
+  CI/CD & Jenkins Pipeline Standards:
+    - Pipeline-as-Code: Every service repository must contain a declarative 'Jenkinsfile' in its root.
+    - CI Quality Gates (Mandatory): No image build if any test fails. Pipeline sequence: 
+        1. Lint/Static Analysis -> 2. Unit Tests -> 3. Integration Tests (via Testcontainers) -> 4. Docker Build & Scan -> 5. Push Image.
+    - Tagging Policy: Release images must be tagged with Git Commit SHA or Semantic Version (e.g., v1.2.3). 'latest' is strictly forbidden for production.
+    - Deployment Standard: Continuous Delivery must use rolling updates with Kubernetes manifests or Helm charts (using GCP Artifact Registry or GitHub Container Registry).
+
+  Observability Standards:
+    - Metrics: Micrometer + Prometheus + Grafana.
+    - Logging: Logback (Structured JSON mandatory), streaming exclusively to stdout/stderr. Loki for aggregation.
+    - Tracing: OpenTelemetry mandatory for request correlation.
+
+  Testing & Quality Standards (Enterprise Grade):
+    - Unit Testing: JUnit 5 (Java), Jest (Node.js & Angular).
+    - Integration Testing: Testcontainers mandatory for local integration tests (Postgres, Redis, RabbitMQ).
+    - E2E Testing: Playwright (mandatory for multi-role flows and WebSocket chat).
+
+  Security Guidelines:
+    - No hardcoded secrets. Trust boundaries defined at Gateway.
+    - Network Segmentation (Mandatory): All downstream services MUST be protected by Kubernetes Network Policies (or Service Mesh) ensuring that network traffic is ONLY accepted from the authorized Gateway or sidecar instances.
+    - Header Standardization: Identity propagation headers (X-User-Id, X-User-Roles) MUST be treated as a global contract across all services. Any change to header definitions requires project-wide infrastructure coordination, and must NEVER be implemented as localized hardcoded strings.
+
+# 開發工件產出規則
+rules:
+  proposal:
+    - Must specify impacted services (Frontend/Java/Node.js).
+    - Must define API contract changes (OpenAPI) if public endpoint modified.
+    - Must justify use of reserved technologies (gRPC/Kafka).
+  design:
+    - Must include sequence diagrams for cross-service calls.
+    - Must specify K8s resource implications and CI/CD Pipeline changes.
+    - Must define observability and E2E test scenarios.
+  tasks:
+    - Every feature branch must contain: Unit Tests + Integration Tests.

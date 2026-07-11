@@ -1,0 +1,30 @@
+# ==============================================================================
+# Prometheus 企業級指標收集設定檔
+# 用途：定期拉取 (Scrape) 本地微服務與基礎建設的監控指標 (Metrics)。
+# ==============================================================================
+global:
+  scrape_interval: 15s      # 預設每 15 秒拉取一次資料
+  evaluation_interval: 15s  # 規則評估間隔
+
+scrape_configs:
+  # 1. Prometheus 自身的監控
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # 2. Spring Cloud Gateway & Spring Boot 微服務監控 (Micrometer)
+  # 實際部署時，請確保微服務的 actuator 有開啟 Prometheus 端點
+  - job_name: 'spring-boot-apps'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets:
+          - 'gateway:8081'       # API 網關 (範例連接)
+          - 'auth-service:8082'  # 認證服務 (範例連接)
+          - 'homework:8083'      # 作業服務 (範例連接)
+
+  # 3. Node.js Online 服務監控 (prom-client)
+  - job_name: 'node-online-service'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets:
+          - 'online-service:5000' # Node.js 服務 (範例連接)

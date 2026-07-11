@@ -1,0 +1,218 @@
+
+
+# ==============================================================================
+# 企業級微服務基礎建設本地開發環境 (docker-compose.yml)
+# 
+# 涵蓋內容：
+# 1. 資料庫層：PostgreSQL (SSO Keycloak 與微服務獨立資料庫), Redis (快取及 WebSocket)
+# 2. 訊息佇列：RabbitMQ (非同步寄信任務)
+# 3. 身份認證：Keycloak (SSO / OAuth2 / OIDC / Google 登入)
+# 4. 電子郵件：Mailpit (本地 SMTP 測試工具，攔截所有外發信件)
+# 5. 可觀測性：Prometheus (指標收集), Grafana (視覺化儀表板), Loki (日誌聚合)
+#
+# 資料持久化機制：所有有狀態服務皆已配置 Docker Volume 進行資料永久化。
+# ==============================================================================
+
+services:
+
+  # ----------------------------------------------------------------------------
+  # PostgreSQL (16+) 資料庫服務
+  # 用途：微服務的核心關係型資料庫與 Keycloak IAM 的持久化後端。
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: study-platform-postgres
+    
+    environment:
+      POSTGRES_USER: postgres         # 超級管理員帳號
+      POSTGRES_PASSWORD: postgres_dev_pass   # 超級管理員密碼
+      POSTGRES_DB: postgres             # 預設主資料庫
+    ports:
+      - "5432:5432"                          # 對外暴露 5432 埠，以便本機開發工具（如 DBeaver）進行連線
+    volumes:
+      - postgres_data:/var/lib/postgresql/data  # 資料持久化目錄，避免容器刪除後資料遺失
+      # 自動初始化腳本：建立 keycloak_db, auth_db, online_db, homework_db
+      - ./infrastructure/postgres/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh
+    networks:
+      - platform-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5  
+
+  # ----------------------------------------------------------------------------
+  # Redis (7+) 快取與共用狀態服務
+  # 用途：兩級快取的 L2 分布式快取，以及 WebSocket 叢集訊息廣播的 Pub/Sub 介質。
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: study-platform-redis
+    
+    command: redis-server --requirepass redis_dev_pass --appendonly yes # 啟用密碼保護，並啟用 AOF 持久化 (永久存檔)
+    ports:
+      - "6379:6379"                          # 對外暴露 6379 埠
+    volumes:
+      - redis_data:/data                     # 資料永久存檔目錄
+    networks:
+      - platform-network
+
+  # ----------------------------------------------------------------------------
+  # RabbitMQ (含 Management UI) 訊息佇列服務
+  # 用途：非同步任務處理（例如發送 Email、作業上傳非同步處理），解耦耗時操作。
+  # ----------------------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: study-platform-rabbitmq
+    
+    environment:
+      RABBITMQ_DEFAULT_USER: rabbit_admin    # RabbitMQ 後台管理帳號
+      RABBITMQ_DEFAULT_PASS: rabbit_dev_pass # RabbitMQ 後台管理密碼
+    ports:
+      - "5672:5672"                          # AMQP 協議通訊埠 (微服務連線)
+      - "15672:15672"                        # Web 管理控制台埠 (網址：http://localhost:15672)
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq      # 永久保存佇列、虛擬主機與權限設定
+    networks:
+      - platform-network
+
+  # ----------------------------------------------------------------------------
+  # Keycloak (24+) 身份與存取管理服務 (IAM)
+  # 用途：提供 SSO (單一登入)、OAuth2/OIDC 認證、多角色權限管制 (RBAC) 以及 Google 第三方登入。
+  # ----------------------------------------------------------------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: study-platform-keycloak
+    
+    # 將 realm 配置匯入，並設定啟用
+    command: start-dev --import-realm --db=postgres --db-url=jdbc:postgresql://postgres:5432/keycloak_db --db-username=keycloak --db-password=keycloak_dev_pass
+    environment:
+      KEYCLOAK_ADMIN: sso_admin              # Keycloak 超級管理員帳號
+      KEYCLOAK_ADMIN_PASSWORD: sso_dev_pass  # Keycloak 超級管理員密碼
+      KC_HOSTNAME: keycloak                  # 固定 Token issuer 為 keycloak hostname（企業 canonical URL 做法）
+      KC_HOSTNAME_PORT: 8080                 # 對應的 port
+      KC_HOSTNAME_STRICT: "false"            # 允許從任意 IP/host 存取（本地開發需要）
+    volumes:
+      - ./infrastructure/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json
+    ports:
+      - "8080:8080"                          # Web 控制台埠 (網址：http://localhost:8080)
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - platform-network
+
+  # ----------------------------------------------------------------------------
+  # Mailpit 電子郵件攔截與測試服務
+  # 用途：本地開發環境的 SMTP 伺服器。任何微服務發送的 Email 都會被它捕獲，並在 Web UI 呈現，防止測試信外流。
+  # ----------------------------------------------------------------------------
+  mailpit:
+    image: axllent/mailpit
+    container_name: study-platform-mailpit
+    
+    ports:
+      - "1025:1025"                          # SMTP 協定接收埠 (微服務設定發信伺服器為: localhost:1025)
+      - "8025:8025"                          # Web 信箱控制台埠 (網址：http://localhost:8025 閱讀信件)
+    networks:
+      - platform-network
+
+  # ----------------------------------------------------------------------------
+  # Prometheus 指標收集服務
+  # 用途：時間序列資料庫，用來定期拉取、儲存並索引各微服務與基礎建設的監控數據。
+  # ----------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: study-platform-prometheus
+    
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml # 載入自訂指標收集設定
+      - prometheus_data:/prometheus          # 指標數據持久化
+    ports:
+      - "9090:9090"                          # Prometheus 原生控制台埠 (網址：http://localhost:9090)
+    networks:
+      - platform-network
+
+  # ----------------------------------------------------------------------------
+  # Grafana 監控視覺化儀表板
+  # 用途：將 Prometheus 收集的指標與 Loki 收集的日誌進行多維度圖表化呈現與監控。
+  # ----------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.4.1
+    container_name: study-platform-grafana
+    
+    environment:
+      - GF_SECURITY_ADMIN_USER=grafana_admin       # Grafana 登入帳號
+      - GF_SECURITY_ADMIN_PASSWORD=grafana_dev_pass # Grafana 登入密碼
+    ports:
+      - "3000:3000"                          # Grafana Web 儀表板埠 (網址：http://localhost:3000)
+    volumes:
+      - grafana_data:/var/lib/grafana        # 永久保存儀表板設計與資料源設定
+    networks:
+      - platform-network
+
+  # ----------------------------------------------------------------------------
+  # Loki 日誌聚合服務
+  # 用途：高效、輕量化的分散式日誌收集系統，與 Grafana 完美融合（用來取代沈重的 ELK 中的 ElasticSearch）。
+  # ----------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: study-platform-loki
+    
+    command: -config.file=/etc/loki/local-config.yaml # 使用 Loki 預設配置啟動
+    ports:
+      - "3100:3100"                          # Loki API 端點
+    volumes:
+      - loki_data:/loki                      # 日誌永久儲存
+    networks:
+      - platform-network
+
+  # ----------------------------------------------------------------------------
+  # API Gateway (Spring Cloud Gateway)
+  # 用途：所有外部請求的統一入口，負責 JWT 驗證並將 User 資訊解析為 X-Headers 轉發。
+  # Port: 8081
+  # ----------------------------------------------------------------------------
+  gateway:
+    build:
+      context: ./backend/gateway            # Dockerfile 所在目錄
+      dockerfile: Dockerfile
+    container_name: study-platform-gateway
+    restart: always
+    ports:
+      - "8081:8081"                          # 外部請求入口
+    depends_on:
+      - keycloak                             # 需先有 Keycloak 才能驗證 JWT
+    networks:
+      - platform-network
+
+  # ----------------------------------------------------------------------------
+  # Auth 微服務 (Downstream Service)
+  # 用途：接收由 Gateway 轉發的請求，並回傳 Gateway 注入的 X-User-* Headers 以驗證流程正確性。
+  # Port: 8082 (僅 Gateway 內部存取，不對外暴露)
+  # ----------------------------------------------------------------------------
+  auth:
+    build:
+      context: ./backend/auth               # Dockerfile 所在目錄
+      dockerfile: Dockerfile
+    container_name: study-platform-auth
+    
+    networks:
+      - platform-network                    # 不對外暴露 port，僅 Gateway 可透過內部網路存取
+
+# ==============================================================================
+# 全域資料永久化 Volumes 宣告 (具名磁碟卷)
+# ==============================================================================
+volumes:
+  postgres_data:    # 永久儲存 PostgreSQL 實體資料
+  redis_data:       # 永久儲存 Redis AOF 與 RDB 快照資料
+  rabbitmq_data:    # 永久儲存 RabbitMQ 佇列元數據
+  prometheus_data:  # 永久儲存 Prometheus 歷史監控指標
+  grafana_data:     # 永久儲存 Grafana 系統設定與 Dashboard 檔案
+  loki_data:        # 永久儲存 Loki 聚合的歷史日誌數據
+
+# ==============================================================================
+# 全域虛擬網路宣告
+# 用途：確保容器間能透過容器名稱 (Service Name, 例如 http://postgres:5432) 相互解析與溝通，並與宿主機網路隔離。
+# ==============================================================================
+networks:
+  platform-network:
+    driver: bridge
